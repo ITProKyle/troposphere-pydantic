@@ -1,0 +1,22 @@
+{
+  "name": "troposphere-pydantic",
+  "version": "0.0.0",
+  "description": "A POC project for using pydantic in the troposhere library.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ITProKyle/troposphere-pydantic.git"
+  },
+  "author": "Kyle Finley",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/ITProKyle/troposphere-pydantic/issues"
+  },
+  "homepage": "https://github.com/ITProKyle/troposphere-pydantic#readme",
+  "devDependencies": {
+    "cspell": "^5.13.2"
+  }
+}

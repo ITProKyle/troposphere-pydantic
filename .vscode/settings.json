@@ -1,0 +1,47 @@
+{
+    "[python]": {
+        "editor.detectIndentation": false,
+        "editor.formatOnSave": true,
+        "editor.insertSpaces": true,
+        "editor.rulers": [
+            81,
+            88,
+            98
+        ],
+        "editor.tabSize": 4
+    },
+    "cSpell.enableFiletypes": [
+        "restructuredtext"
+    ],
+    "cSpell.enabled": true,
+    "files.exclude": {
+        "**/*.egg-info": true,
+        "**/*.pyc": true,
+        "**/.DS_Store": true,
+        "**/.cache": true,
+        "**/.eggs": true,
+        "**/.git": true,
+        "**/.hg": true,
+        "**/.pytest_cache": true,
+        "**/.svn": true,
+        "**/CVS": true,
+        "**/__pycache__": true
+    },
+    "files.insertFinalNewline": true,
+    "python.analysis.typeCheckingMode": "strict",
+    "python.formatting.provider": "black",
+    "python.linting.flake8Args": [
+        "--docstring-convention=all"
+    ],
+    "python.linting.flake8Enabled": true,
+    "python.linting.mypyEnabled": false,
+    "python.linting.pylintArgs": [
+        "--rcfile=pyproject.toml"
+    ],
+    "python.linting.pylintEnabled": true,
+    "python.pythonPath": "${workspaceFolder}/.venv/bin/python",
+    "python.testing.pytestArgs": [
+        "tests",
+        "--no-cov"
+    ]
+}
