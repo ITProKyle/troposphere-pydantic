@@ -9,9 +9,15 @@ license = "Apache-2.0"
 readme = "README.md"
 homepage = "https://github.com/ITProKyle/troposphere-pydantic"
 repository = "https://github.com/ITProKyle/troposphere-pydantic"
+packages = [
+  { include = "troposphere" },
+]
 
 [tool.poetry.dependencies]
 python = "^3.9"
+
+cfn-flip = "^1.3.0"
+pydantic = { git = "https://github.com/samuelcolvin/pydantic.git", branch = "master" }  # needed until 1.9 release
 
 [tool.poetry.dev-dependencies]
 black = "^21.12b0"

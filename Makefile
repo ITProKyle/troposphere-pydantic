@@ -41,12 +41,12 @@ lint-isort: ## run isort
 
 lint-pylint: ## run pylint
 	@echo "Running pylint..."
-	@poetry run pylint runway tests --rcfile=pyproject.toml
+	@poetry run pylint troposphere tests --rcfile=pyproject.toml
 	@echo ""
 
 lint-pyright: ## run pyright
 	@echo "Running pyright..."
-	@npm run-script py-type-check
+	@npx pyright --venv-path ./
 	@echo ""
 
 run-pre-commit: ## run pre-commit for all files

@@ -35,9 +35,12 @@
     "words": [
         "abstractmethod",
         "ALGS",
+        "apidocs",
         "asdict",
         "boto",
+        "classmethod",
         "codecov",
+        "conds",
         "distutils",
         "docstrings",
         "fgrep",
@@ -64,6 +67,7 @@
         "typeshed",
         "ungrouped",
         "unsubscriptable",
-        "venv"
+        "venv",
+        "virtualenvs"
     ]
 }
