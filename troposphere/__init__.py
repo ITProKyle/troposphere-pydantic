@@ -375,7 +375,9 @@ class Template(BaseModel, mixins.ToJsonMixin):
             raise ValueError(f"Maximum parameters {MAX_PARAMETERS} reached")
         return self._update(self.parameters, parameter)
 
-    def add_parameter_to_group(self, parameter: Union[Parameter, str], group_name: str):
+    def add_parameter_to_group(
+        self, parameter: Union[BaseAWSObject, str], group_name: str
+    ):
         """Add a parameter under a group (created if needed)."""
         groups: List[ParameterGroupTypedDict] = self.metadata.setdefault(
             "AWS::CloudFormation::Interface", {}
@@ -480,7 +482,9 @@ class Template(BaseModel, mixins.ToJsonMixin):
         # this isn't really needed
         self.metadata = metadata
 
-    def set_parameter_label(self, parameter: Union[Parameter, str], label: str) -> None:
+    def set_parameter_label(
+        self, parameter: Union[BaseAWSObject, str], label: str
+    ) -> None:
         """Set the Label used in the User Interface for the given parameter."""
         labels = self.metadata.setdefault(
             "AWS::CloudFormation::Interface", {}
@@ -567,7 +571,47 @@ class Template(BaseModel, mixins.ToJsonMixin):
         return self.json()
 
 
-class Parameter(AWSDeclaration):
+class Export(AWSHelperFn):
+    """Export value in an ``Output``."""
+
+    def __init__(self, name: str):
+        """Instantiate class.
+
+        Args:
+            name: Export name.
+
+        """
+        self.data = {"Name": name}
+
+    @classmethod
+    def validate(cls, v: Any) -> Export:
+        """Validate value."""
+        if isinstance(v, cls):
+            return v
+        if isinstance(v, str):
+            return cls(v)
+        if isinstance(v, dict) and "Name" in v and isinstance(v["Name"], str):
+            return cls(v["Name"])
+        raise TypeError(f"string or {cls.__qualname__} required")
+
+
+ExportTypedDict = TypedDict("ExportTypedDict", Name=str)
+
+
+class Output(AWSDeclaration):
+    """Stack output."""
+
+    Description: Optional[str] = None
+    Export: Optional[Union[Export, ExportTypedDict]] = None
+    Value: Union[str, AWSHelperFnOrDict]
+
+    def add_to_template(self):
+        """Add to Template."""
+        if self.template is not None:
+            self.template.add_output(self)
+
+
+class Parameter(AWSDeclaration, BaseAWSObject):
     """CloudFormation Parameter."""
 
     title: str = Field(..., max_length=PARAMETER_TITLE_MAX, regex=r"^[a-zA-Z0-9]+$")
@@ -641,46 +685,6 @@ class Parameter(AWSDeclaration):
                 f"{field.name} can only be used with parameters of type String"
             )
         return v
-
-
-class Export(AWSHelperFn):
-    """Export value in an ``Output``."""
-
-    def __init__(self, name: str):
-        """Instantiate class.
-
-        Args:
-            name: Export name.
-
-        """
-        self.data = {"Name": name}
-
-    @classmethod
-    def validate(cls, v: Any) -> Export:
-        """Validate value."""
-        if isinstance(v, cls):
-            return v
-        if isinstance(v, str):
-            return cls(v)
-        if isinstance(v, dict) and "Name" in v and isinstance(v["Name"], str):
-            return cls(v["Name"])
-        raise TypeError(f"string or {cls.__qualname__} required")
-
-
-ExportTypedDict = TypedDict("ExportTypedDict", Name=str)
-
-
-class Output(AWSDeclaration):
-    """Stack output."""
-
-    Description: Optional[str] = None
-    Export: Optional[Union[Export, ExportTypedDict]] = None
-    Value: Union[str, AWSHelperFnOrDict]
-
-    def add_to_template(self):
-        """Add to Template."""
-        if self.template is not None:
-            self.template.add_output(self)
 
 
 class AWSAttribute(BaseAWSObject):
