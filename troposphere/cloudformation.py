@@ -27,15 +27,15 @@ class WaitCondition(AWSObject):
     @root_validator(pre=True)
     def _validate_fields(cls, values: Dict[str, Any]) -> Any:
         """Validate fields."""
-        conditionaly_required = {k: values.get(k, None) for k in ["Handle", "Timeout"]}
+        conditionally_required = {k: values.get(k, None) for k in ["Handle", "Timeout"]}
         if values.get("CreationPolicy", None):
-            for k, v in conditionaly_required.items():
+            for k, v in conditionally_required.items():
                 if v:
                     raise ValueError(
                         f"Property {k} cannot be specified with CreationPolicy"
                     )
         else:
-            for k, v in conditionaly_required.items():
+            for k, v in conditionally_required.items():
                 if not v:
                     raise ValueError(
                         f"{k} field required when not specifying CreationPolicy"
