@@ -9,18 +9,22 @@ import json
 import sys
 from typing import (
     TYPE_CHECKING,
+    AbstractSet,
     Any,
     Callable,
     ClassVar,
     Dict,
     Iterator,
     List,
+    Mapping,
     NoReturn,
     Optional,
+    Tuple,
     Type,
     TypedDict,
     TypeVar,
     Union,
+    cast,
     overload,
 )
 
@@ -39,6 +43,8 @@ from .constants import (
 
 if TYPE_CHECKING:
     from pydantic.fields import ModelField
+
+    from .protocols import ToDictProtocol
 
 if sys.version_info < (3, 8):
     # importlib.metadata is standard lib for python>=3.8, use backport
@@ -77,12 +83,51 @@ AWS_URL_SUFFIX = "AWS::URLSuffix"
 _T = TypeVar("_T")
 
 
+# type aliases
+AbstractSetIntStr = AbstractSet[Union[int, str]]
+MappingIntStrAny = Mapping[Union[int, str], Any]
+
+
 BaseAWSObjectType = TypeVar("BaseAWSObjectType", bound="BaseAWSObject")
+
+
+def encode_to_dict(
+    obj: Union[Dict[str, object], List[object], Tuple[object], object]
+) -> Any:
+    """Encode objects to dict."""
+    if hasattr(obj, "to_dict"):
+        # Calling encode_to_dict to ensure object is
+        # nomalized to a base dictionary all the way down.
+        return encode_to_dict(cast("ToDictProtocol", obj).to_dict())
+    if isinstance(obj, (list, tuple)):
+        new_lst: List[object] = []
+        for i in cast(Union[List[object], Tuple[object, ...]], obj):
+            new_lst.append(encode_to_dict(i))
+        return new_lst
+    if isinstance(obj, dict):
+        props: Dict[str, object] = {}
+        for name, prop in cast(Dict[str, object], obj).items():
+            props[name] = encode_to_dict(prop)
+        return props
+    # This is useful when dealing with external libs using
+    # this format. Specifically awacs.
+    if hasattr(obj, "JSONrepr"):
+        return encode_to_dict(obj.JSONrepr())  # type: ignore
+    return obj
 
 
 class BaseAWSObject(BaseModel):
     """Base class for AWS objects."""
 
+    ATTRIBUTES: ClassVar[List[str]] = [
+        "Condition",
+        "CreationPolicy",
+        "DeletionPolicy",
+        "DependsOn",
+        "Metadata",
+        "UpdatePolicy",
+        "UpdateReplacePolicy",
+    ]
     DICT_NAME: ClassVar[Optional[str]] = None
 
     title: str = Field(..., regex=r"^[a-zA-Z0-9]+$")
@@ -95,10 +140,65 @@ class BaseAWSObject(BaseModel):
         extra = Extra.forbid
         fields = {"template": {"exclude": True}, "title": {"exclude": True}}
 
+    def __init__(self, **data: Any) -> None:
+        """Instantiate class.
+
+        Calls parent ``.__init__()`` method then performes custom steps.
+
+        """
+        super().__init__(**data)
+        self.add_to_template()
+
     def add_to_template(self):
-        """Add object to a Template."""
+        """Add object to a Template.
+
+        Called when outputting to dict.
+
+        """
         if self.template:
             self.template.add_resource(self)
+
+    def dict(
+        self,
+        *,
+        include: Union[AbstractSetIntStr, MappingIntStrAny] = None,
+        exclude: Union[AbstractSetIntStr, MappingIntStrAny] = None,
+        by_alias: bool = False,
+        skip_defaults: bool = None,
+        exclude_unset: bool = False,
+        exclude_defaults: bool = False,
+        exclude_none: bool = False,
+    ) -> Dict[str, Any]:
+        """Generate a dictionary representation of the model.
+
+        Wraps method from parent with additional value resolution and formatting
+        specific to this usage.
+
+        """
+        data = super().dict(
+            include=include,
+            exclude=exclude,
+            by_alias=by_alias,
+            skip_defaults=skip_defaults,
+            exclude_unset=exclude_unset,
+            exclude_defaults=exclude_defaults,
+            exclude_none=exclude_none,
+        )
+        if self.DICT_NAME:
+            attributes = {}
+            for attr in self.ATTRIBUTES:
+                if attr in data:
+                    attributes[attr] = data.pop(attr)
+            return {self.DICT_NAME: data, **attributes}
+        return encode_to_dict(data)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Output object as a dictionary.
+
+        High-level alternative to :method:`troposphere.BaseAWSObject.dict`.
+
+        """
+        return self.dict(by_alias=True, exclude_none=True)
 
     @classmethod
     def from_dict(
@@ -109,30 +209,6 @@ class BaseAWSObject(BaseModel):
         return cls(title=title, **data)
 
 
-class AWSAttribute(BaseAWSObject):
-    """Used for CloudFormation Resource Attribute objects.
-
-    http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/
-    aws-product-attribute-reference.html
-
-    """
-
-    DICT_NAME: ClassVar[Optional[str]] = None
-
-
-class AWSDeclaration(BaseAWSObject):
-    """Used for CloudFormation Resource Property objects.
-
-    http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/
-    aws-product-property-reference.html
-
-    """
-
-    def ref(self) -> Ref:
-        """Return CloudFormation ``Ref`` intrinsic function."""
-        return Ref(self)
-
-
 AWSHelperFnType = TypeVar("AWSHelperFnType", bound="AWSHelperFn")
 
 
@@ -141,16 +217,16 @@ class AWSHelperFn(mixins.ToJsonMixin):
 
     data: Dict[str, Any]
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Output object as a dictionary."""
+        return encode_to_dict(self.data)
+
     @staticmethod
     def getdata(data: Union[BaseAWSObject, _T]) -> Union[str, _T]:
         """Get data from object."""
         if isinstance(data, BaseAWSObject):
             return data.title
         return data
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Output object as a dictionary."""
-        return self.data  # TODO encode
 
     def __eq__(self, other: object) -> bool:
         """Evaluate equality."""
@@ -189,7 +265,10 @@ class AWSHelperFn(mixins.ToJsonMixin):
         return cls()
 
 
-class AWSProperty(BaseAWSObject):
+AWSHelperFnOrDict = Union[Dict[str, Any], AWSHelperFn]
+
+
+class AWSDeclaration(BaseAWSObject):
     """Used for CloudFormation Resource Property objects.
 
     http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/
@@ -197,335 +276,9 @@ class AWSProperty(BaseAWSObject):
 
     """
 
-    DICT_NAME: ClassVar[Optional[str]] = None
-
-
-class AWSObject(BaseAWSObject):
-    """AWS Object."""
-
-    DICT_NAME: ClassVar[str] = "Properties"
-
     def ref(self) -> Ref:
-        """Return a reference to this object."""
+        """Return CloudFormation ``Ref`` intrinsic function."""
         return Ref(self)
-
-    def get_att(self, value: str) -> GetAtt:
-        """Return a reference to an attribute of this object."""
-        return GetAtt(self, value)
-
-
-class Output(AWSDeclaration):
-    """Stack output."""
-
-    Description: Optional[str] = None
-    Export: Optional[Export] = None
-    Value: Union[str, Dict[str, Any], AWSHelperFn]
-
-    def add_to_template(self):
-        """Add to Template."""
-        if self.template is not None:
-            self.template.add_output(self)
-
-
-class Parameter(AWSDeclaration):
-    """CloudFormation Parameter."""
-
-    title: str = Field(..., max_length=PARAMETER_TITLE_MAX, regex=r"^[a-zA-Z0-9]+$")
-    Type: str  # needs to be set first for other fields to be validated
-
-    AllowedPattern: Optional[str] = None
-    AllowedValues: Optional[List[Union[int, float, str]]] = None
-    ConstraintDescription: Optional[str] = None
-    Default: Optional[Union[int, float, str]] = None
-    Description: Optional[str] = None
-    MaxLength: Optional[int] = Field(default=None, gt=0)
-    MaxValue: Optional[int] = None
-    MinLength: Optional[int] = Field(default=None, gt=0)
-    MinValue: Optional[int] = None
-    NoEcho: Optional[bool] = None
-
-    def add_to_template(self):
-        """Add to Template."""
-        if self.template is not None:
-            self.template.add_parameter(self)
-
-    @validator("Default")
-    def _validate_default_type(cls, v: Any, values: Dict[str, Any]) -> Any:
-        """Validate type of default value if provided."""
-
-        def _check_type(type_: type, val: object) -> bool:
-            try:
-                type_(val)
-                return True
-            except ValueError:
-                return False
-
-        param_type = values.get("Type", "")
-        error_template = (
-            "Parameter default type mismatch: expecting type {0} got {1} with "
-            "value {2!r}"
-        )
-        if param_type == "String" and not isinstance(v, str):
-            raise TypeError(error_template.format(param_type, type(v), v))
-        if param_type == "Number" and not isinstance(v, (float, int)):
-            raise TypeError(error_template.format(param_type, type(v), v))
-        if param_type.startswith("List") or param_type == "CommaDelimitedList":
-            if not isinstance(v, str):
-                raise TypeError(error_template.format(param_type, type(v), v))
-            v_split = v.split(",")
-            if param_type == "List<Number>":
-                for i in v_split:
-                    if not _check_type(float, i):
-                        raise TypeError(
-                            error_template.format(param_type, type(i), v_split)
-                        )
-
-    @validator("MaxValue", "MinValue")
-    def _validate_number_only_fields(
-        cls, v: Any, field: ModelField, values: Dict[str, Any]
-    ) -> Any:
-        """Validate fields that can only be used with ``Type: Number``."""
-        if values.get("Type") != "Number":
-            raise ValueError(
-                f"{field.name} can only be used with parameters of type String"
-            )
-        return v
-
-    @validator("AllowedPattern", "MaxLength", "MinLength")
-    def _validate_string_only_fields(
-        cls, v: Any, field: ModelField, values: Dict[str, Any]
-    ) -> Any:
-        """Validate fields that can only be used with ``Type: String``."""
-        if values.get("Type") != "String":
-            raise ValueError(
-                f"{field.name} can only be used with parameters of type String"
-            )
-        return v
-
-
-AWSHelperFnOrDict = Union[Dict[str, Any], AWSHelperFn]
-
-
-class GenericHelperFn(AWSHelperFn):
-    """Used as a fallback for the template generator."""
-
-    def __init__(self, data: Any) -> None:
-        """Instantiate class."""
-        self.data = self.getdata(data)  # type: ignore
-
-
-class And(AWSHelperFn):
-    """CloudFormation ``Fn::And`` intrinsic function."""
-
-    def __init__(self, *conds: AWSHelperFnOrDict) -> None:
-        """Instantiate class."""
-        self.data = {"Fn::And": list(conds)}
-
-
-class Base64(AWSHelperFn):
-    """CloudFormation ``Fn::Base64`` intrinsic function."""
-
-    def __init__(self, data: Union[AWSHelperFnOrDict, str, BaseAWSObject]) -> None:
-        """Instantiate class."""
-        self.data = {"Fn::Base64": data}
-
-
-class Cidr(AWSHelperFn):
-    """CloudFormation ``Fn::Cidr`` intrinsic function."""
-
-    def __init__(
-        self, ip_block: str, count: int, cidr_bits: Optional[int] = None
-    ) -> None:
-        """Instantiate class.
-
-        Args:
-            ip_block: The user-specified CIDR address block to be split into
-                smaller CIDR blocks.
-            count: The number of CIDRs to generate. Valid range is between 1 and 256.
-            cidr_bits: The number of subnet bits for the CIDR.
-                For example, specifying a value "8" for this parameter will create
-                a CIDR with a mask of "/24".
-
-        """
-        self.data = {
-            "Fn::Cidr": [ip_block, count, cidr_bits] if cidr_bits else [ip_block, count]
-        }
-
-
-class Equals(AWSHelperFn):
-    """CloudFormation ``Fn::Equals`` intrinsic function."""
-
-    def __init__(
-        self,
-        value_one: Union[str, AWSHelperFnOrDict, BaseAWSObject],
-        value_two: Union[str, AWSHelperFnOrDict, BaseAWSObject],
-    ) -> None:
-        """Instantiate class."""
-        self.data = {"Fn::Equals": [self.getdata(value_one), self.getdata(value_two)]}
-
-
-class Export(AWSHelperFn):
-    """Export value in an ``Output``."""
-
-    def __init__(self, name: str):
-        """Instantiate class.
-
-        Args:
-            name: Export name.
-
-        """
-        self.data = {"Name": name}
-
-    @classmethod
-    def validate(cls, v: Any) -> Export:
-        """Validate value."""
-        if isinstance(v, cls):
-            return v
-        if isinstance(v, str):
-            return cls(v)
-        if isinstance(v, dict) and "Name" in v and isinstance(v["Name"], str):
-            return cls(v["Name"])
-        raise TypeError(f"string or {cls.__qualname__} required")
-
-
-class FindInMap(AWSHelperFn):
-    """CloudFormation ``Fn::FindInMap`` intrinsic function."""
-
-    def __init__(
-        self,
-        map_name: Union[str, AWSHelperFnOrDict],
-        top_level_key: Union[str, AWSHelperFnOrDict],
-        second_level_key: Union[str, AWSHelperFnOrDict],
-    ) -> None:
-        """Instantiate class."""
-        self.data = {
-            "Fn::FindInMap": [self.getdata(map_name), top_level_key, second_level_key]
-        }
-
-
-class GetAtt(AWSHelperFn):
-    """CloudFormation ``Fn::GetAtt`` intrinsic function."""
-
-    def __init__(
-        self, logical_name: Union[str, AWSHelperFnOrDict, BaseAWSObject], attr_name: str
-    ):
-        """Instantiate class."""
-        self.data = {"Fn::GetAtt": [self.getdata(logical_name), attr_name]}
-
-
-class GetAZs(AWSHelperFn):
-    """CloudFormation ``Fn::GetAZs`` intrinsic function."""
-
-    def __init__(self, region: Union[str, AWSHelperFnOrDict] = "") -> None:
-        """Instantiate class."""
-        self.data = {"Fn::GetAZs": region}
-
-
-class If(AWSHelperFn):
-    """CloudFormation ``Fn::If`` intrinsic function."""
-
-    def __init__(
-        self,
-        cond: AWSHelperFnOrDict,
-        if_true: Union[BaseAWSObject, AWSHelperFnOrDict],
-        if_false: Union[BaseAWSObject, AWSHelperFnOrDict],
-    ) -> None:
-        """Instantiate class."""
-        self.data = {"Fn::If": [self.getdata(cond), if_true, if_false]}
-
-
-class Join(AWSHelperFn):
-    """CloudFormation ``Fn::Join`` intrinsic function."""
-
-    def __init__(self, delimiter: str, values: AWSHelperFnOrDict) -> None:
-        """Instantiate class."""
-        validators.validate_delimiter(delimiter)
-        self.data = {"Fn::Join": [delimiter, values]}
-
-
-class Not(AWSHelperFn):
-    """CloudFormation ``Fn::Not`` intrinsic function."""
-
-    def __init__(self, cond: AWSHelperFnOrDict) -> None:
-        """Instantiate class."""
-        self.data = {"Fn::Not": [self.getdata(cond)]}
-
-
-class Or(AWSHelperFn):
-    """CloudFormation ``Fn::Or`` intrinsic function."""
-
-    def __init__(self, *conds: AWSHelperFnOrDict) -> None:
-        """Instantiate class."""
-        self.data = {"Fn::Or": list(conds)}
-
-
-class Ref(AWSHelperFn):
-    """CloudFormation ``Ref`` intrinsic function."""
-
-    def __init__(self, data: Union[BaseAWSObject, str]) -> None:
-        """Instantiate class."""
-        self.data = {"Ref": self.getdata(data)}
-
-    @classmethod
-    def validate(cls, v: Any) -> Ref:
-        """Validate value."""
-        if isinstance(v, cls):
-            return v
-        if isinstance(v, str):
-            return cls(v)
-        if isinstance(v, dict) and "Ref" in v and isinstance(v["Ref"], str):
-            return cls(v["Ref"])
-        raise TypeError(f"string or {cls.__qualname__} required")
-
-
-class Select(AWSHelperFn):
-    """CloudFormation ``Fn::Select`` intrinsic function."""
-
-    def __init__(
-        self, index: int, objects: Union[AWSHelperFn, Dict[str, Any], List[Any]]
-    ):
-        """Instantiate class."""
-        self.data = {"Fn::Select": [index, objects]}
-
-
-class Split(AWSHelperFn):
-    """CloudFormation ``Fn::Split`` intrinsic function."""
-
-    def __init__(
-        self, delimiter: str, values: Union[str, Dict[str, Any], AWSHelperFn]
-    ) -> None:
-        """Instantiate class."""
-        validators.validate_delimiter(delimiter)
-        self.data = {"Fn::Split": [delimiter, values]}
-
-
-class Sub(AWSHelperFn):
-    """CloudFormation ``Fn::Sub`` intrinsic function."""
-
-    def __init__(
-        self,
-        input_str: str,
-        dict_values: Optional[Dict[str, Any]] = None,
-        **values: Any,
-    ) -> None:
-        """Instantiate class."""
-        # merge dict
-        if dict_values:
-            values.update(dict_values)
-        self.data = {"Fn::Sub": [input_str, values] if values else input_str}
-
-
-class DefaultTypedDict(TypedDict):
-    """TypedDict that only contains a ``default`` field."""
-
-    default: str
-
-
-class ParameterGroupTypedDict(TypedDict):
-    """``AWS::CloudFormation::Interface.ParameterGroup``."""
-
-    Label: DefaultTypedDict
-    Parameters: List[str]
 
 
 class Template(BaseModel, mixins.ToJsonMixin):
@@ -533,9 +286,7 @@ class Template(BaseModel, mixins.ToJsonMixin):
 
     conditions: Dict[str, Any] = Field(default={}, alias="Conditions")
     description: Optional[str] = Field(default=None, alias="Description")
-    globals: Optional[Union[Dict[str, Any], AWSHelperFn]] = Field(
-        default=None, alias="Globals"
-    )
+    globals: Optional[AWSHelperFnOrDict] = Field(default=None, alias="Globals")
     mappings: Dict[str, Dict[str, Any]] = Field(default={}, alias="Mappings")
     metadata: Dict[str, Any] = Field(default={}, alias="Metadata")
     outputs: Dict[str, Output] = Field(default={}, alias="Outputs")
@@ -675,6 +426,35 @@ class Template(BaseModel, mixins.ToJsonMixin):
             self.handle_duplicate_key(name)
         self.rules[name] = rule
 
+    def dict(
+        self,
+        *,
+        include: Union[AbstractSetIntStr, MappingIntStrAny] = None,
+        exclude: Union[AbstractSetIntStr, MappingIntStrAny] = None,
+        by_alias: bool = False,
+        skip_defaults: bool = None,
+        exclude_unset: bool = False,
+        exclude_defaults: bool = False,
+        exclude_none: bool = False,
+    ) -> Dict[str, Any]:
+        """Generate a dictionary representation of the model.
+
+        Wraps method from parent with additional value resolution and formatting
+        specific to this usage.
+
+        """
+        return encode_to_dict(
+            super().dict(
+                include=include,
+                exclude=exclude,
+                by_alias=by_alias,
+                skip_defaults=skip_defaults,
+                exclude_unset=exclude_unset,
+                exclude_defaults=exclude_defaults,
+                exclude_none=exclude_none,
+            )
+        )
+
     def get_or_add_parameter(self, parameter: Parameter) -> Parameter:
         """Get a :class:`troposphere.Parameter` from the Template or add it."""
         if parameter.title in self.parameters:
@@ -724,7 +504,7 @@ class Template(BaseModel, mixins.ToJsonMixin):
         else:
             self.version = "2010-09-09"
 
-    def to_dict(self) -> Dict[str, Any]:  # TODO review
+    def to_dict(self) -> Dict[str, Any]:
         """Output Template as a dictionary."""
         return self.dict(
             by_alias=True,
@@ -787,6 +567,340 @@ class Template(BaseModel, mixins.ToJsonMixin):
         return self.json()
 
 
+class Parameter(AWSDeclaration):
+    """CloudFormation Parameter."""
+
+    title: str = Field(..., max_length=PARAMETER_TITLE_MAX, regex=r"^[a-zA-Z0-9]+$")
+    Type: str  # needs to be set first for other fields to be validated
+
+    AllowedPattern: Optional[str] = None
+    AllowedValues: Optional[List[Union[int, float, str]]] = None
+    ConstraintDescription: Optional[str] = None
+    Default: Optional[Union[int, float, str]] = None
+    Description: Optional[str] = None
+    MaxLength: Optional[int] = Field(default=None, gt=0)
+    MaxValue: Optional[int] = None
+    MinLength: Optional[int] = Field(default=None, gt=0)
+    MinValue: Optional[int] = None
+    NoEcho: Optional[bool] = None
+
+    def add_to_template(self):
+        """Add to Template."""
+        if self.template is not None:
+            self.template.add_parameter(self)
+
+    @validator("Default")
+    def _validate_default_type(cls, v: Any, values: Dict[str, Any]) -> Any:
+        """Validate type of default value if provided."""
+
+        def _check_type(type_: type, val: object) -> bool:
+            try:
+                type_(val)
+                return True
+            except ValueError:
+                return False
+
+        param_type = values.get("Type", "")
+        error_template = (
+            "Parameter default type mismatch: expecting type {0} got {1} with "
+            "value {2!r}"
+        )
+        if param_type == "String" and not isinstance(v, str):
+            raise TypeError(error_template.format(param_type, type(v), v))
+        if param_type == "Number" and not isinstance(v, (float, int)):
+            raise TypeError(error_template.format(param_type, type(v), v))
+        if param_type.startswith("List") or param_type == "CommaDelimitedList":
+            if not isinstance(v, str):
+                raise TypeError(error_template.format(param_type, type(v), v))
+            v_split = v.split(",")
+            if param_type == "List<Number>":
+                for i in v_split:
+                    if not _check_type(float, i):
+                        raise TypeError(
+                            error_template.format(param_type, type(i), v_split)
+                        )
+
+    @validator("MaxValue", "MinValue")
+    def _validate_number_only_fields(
+        cls, v: Any, field: ModelField, values: Dict[str, Any]
+    ) -> Any:
+        """Validate fields that can only be used with ``Type: Number``."""
+        if values.get("Type") != "Number":
+            raise ValueError(
+                f"{field.name} can only be used with parameters of type String"
+            )
+        return v
+
+    @validator("AllowedPattern", "MaxLength", "MinLength")
+    def _validate_string_only_fields(
+        cls, v: Any, field: ModelField, values: Dict[str, Any]
+    ) -> Any:
+        """Validate fields that can only be used with ``Type: String``."""
+        if values.get("Type") != "String":
+            raise ValueError(
+                f"{field.name} can only be used with parameters of type String"
+            )
+        return v
+
+
+class Export(AWSHelperFn):
+    """Export value in an ``Output``."""
+
+    def __init__(self, name: str):
+        """Instantiate class.
+
+        Args:
+            name: Export name.
+
+        """
+        self.data = {"Name": name}
+
+    @classmethod
+    def validate(cls, v: Any) -> Export:
+        """Validate value."""
+        if isinstance(v, cls):
+            return v
+        if isinstance(v, str):
+            return cls(v)
+        if isinstance(v, dict) and "Name" in v and isinstance(v["Name"], str):
+            return cls(v["Name"])
+        raise TypeError(f"string or {cls.__qualname__} required")
+
+
+ExportTypedDict = TypedDict("ExportTypedDict", Name=str)
+
+
+class Output(AWSDeclaration):
+    """Stack output."""
+
+    Description: Optional[str] = None
+    Export: Optional[Union[Export, ExportTypedDict]] = None
+    Value: Union[str, AWSHelperFnOrDict]
+
+    def add_to_template(self):
+        """Add to Template."""
+        if self.template is not None:
+            self.template.add_output(self)
+
+
+class AWSAttribute(BaseAWSObject):
+    """Used for CloudFormation Resource Attribute objects.
+
+    http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/
+    aws-product-attribute-reference.html
+
+    """
+
+    DICT_NAME: ClassVar[Optional[str]] = None
+
+
+class AWSProperty(BaseAWSObject):
+    """Used for CloudFormation Resource Property objects.
+
+    http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/
+    aws-product-property-reference.html
+
+    """
+
+    DICT_NAME: ClassVar[Optional[str]] = None
+
+
+class GenericHelperFn(AWSHelperFn):
+    """Used as a fallback for the template generator."""
+
+    def __init__(self, data: Any) -> None:
+        """Instantiate class."""
+        self.data = self.getdata(data)  # type: ignore
+
+
+class And(AWSHelperFn):
+    """CloudFormation ``Fn::And`` intrinsic function."""
+
+    def __init__(self, *conds: AWSHelperFnOrDict) -> None:
+        """Instantiate class."""
+        self.data = {"Fn::And": list(conds)}
+
+
+class Base64(AWSHelperFn):
+    """CloudFormation ``Fn::Base64`` intrinsic function."""
+
+    def __init__(self, data: Union[AWSHelperFnOrDict, str, BaseAWSObject]) -> None:
+        """Instantiate class."""
+        self.data = {"Fn::Base64": data}
+
+
+class Cidr(AWSHelperFn):
+    """CloudFormation ``Fn::Cidr`` intrinsic function."""
+
+    def __init__(
+        self, ip_block: str, count: int, cidr_bits: Optional[int] = None
+    ) -> None:
+        """Instantiate class.
+
+        Args:
+            ip_block: The user-specified CIDR address block to be split into
+                smaller CIDR blocks.
+            count: The number of CIDRs to generate. Valid range is between 1 and 256.
+            cidr_bits: The number of subnet bits for the CIDR.
+                For example, specifying a value "8" for this parameter will create
+                a CIDR with a mask of "/24".
+
+        """
+        self.data = {
+            "Fn::Cidr": [ip_block, count, cidr_bits] if cidr_bits else [ip_block, count]
+        }
+
+
+class Equals(AWSHelperFn):
+    """CloudFormation ``Fn::Equals`` intrinsic function."""
+
+    def __init__(
+        self,
+        value_one: Union[str, AWSHelperFnOrDict, BaseAWSObject],
+        value_two: Union[str, AWSHelperFnOrDict, BaseAWSObject],
+    ) -> None:
+        """Instantiate class."""
+        self.data = {"Fn::Equals": [self.getdata(value_one), self.getdata(value_two)]}
+
+
+class FindInMap(AWSHelperFn):
+    """CloudFormation ``Fn::FindInMap`` intrinsic function."""
+
+    def __init__(
+        self,
+        map_name: Union[str, AWSHelperFnOrDict],
+        top_level_key: Union[str, AWSHelperFnOrDict],
+        second_level_key: Union[str, AWSHelperFnOrDict],
+    ) -> None:
+        """Instantiate class."""
+        self.data = {
+            "Fn::FindInMap": [self.getdata(map_name), top_level_key, second_level_key]
+        }
+
+
+class GetAtt(AWSHelperFn):
+    """CloudFormation ``Fn::GetAtt`` intrinsic function."""
+
+    def __init__(
+        self, logical_name: Union[str, AWSHelperFnOrDict, BaseAWSObject], attr_name: str
+    ):
+        """Instantiate class."""
+        self.data = {"Fn::GetAtt": [self.getdata(logical_name), attr_name]}
+
+
+class GetAZs(AWSHelperFn):
+    """CloudFormation ``Fn::GetAZs`` intrinsic function."""
+
+    def __init__(self, region: Union[str, AWSHelperFnOrDict] = "") -> None:
+        """Instantiate class."""
+        self.data = {"Fn::GetAZs": region}
+
+
+class If(AWSHelperFn):
+    """CloudFormation ``Fn::If`` intrinsic function."""
+
+    def __init__(
+        self,
+        cond: AWSHelperFnOrDict,
+        if_true: Union[BaseAWSObject, AWSHelperFnOrDict],
+        if_false: Union[BaseAWSObject, AWSHelperFnOrDict],
+    ) -> None:
+        """Instantiate class."""
+        self.data = {"Fn::If": [self.getdata(cond), if_true, if_false]}
+
+
+class Join(AWSHelperFn):
+    """CloudFormation ``Fn::Join`` intrinsic function."""
+
+    def __init__(self, delimiter: str, values: AWSHelperFnOrDict) -> None:
+        """Instantiate class."""
+        validators.validate_delimiter(delimiter)
+        self.data = {"Fn::Join": [delimiter, values]}
+
+
+class Not(AWSHelperFn):
+    """CloudFormation ``Fn::Not`` intrinsic function."""
+
+    def __init__(self, cond: AWSHelperFnOrDict) -> None:
+        """Instantiate class."""
+        self.data = {"Fn::Not": [self.getdata(cond)]}
+
+
+class Or(AWSHelperFn):
+    """CloudFormation ``Fn::Or`` intrinsic function."""
+
+    def __init__(self, *conds: AWSHelperFnOrDict) -> None:
+        """Instantiate class."""
+        self.data = {"Fn::Or": list(conds)}
+
+
+class Ref(AWSHelperFn):
+    """CloudFormation ``Ref`` intrinsic function."""
+
+    def __init__(self, data: Union[BaseAWSObject, str]) -> None:
+        """Instantiate class."""
+        self.data = {"Ref": self.getdata(data)}
+
+    @classmethod
+    def validate(cls, v: Any) -> Ref:
+        """Validate value."""
+        if isinstance(v, cls):
+            return v
+        if isinstance(v, str):
+            return cls(v)
+        if isinstance(v, dict) and "Ref" in v and isinstance(v["Ref"], str):
+            return cls(v["Ref"])
+        raise TypeError(f"string or {cls.__qualname__} required")
+
+
+class Select(AWSHelperFn):
+    """CloudFormation ``Fn::Select`` intrinsic function."""
+
+    def __init__(
+        self, index: int, objects: Union[AWSHelperFn, Dict[str, Any], List[Any]]
+    ):
+        """Instantiate class."""
+        self.data = {"Fn::Select": [index, objects]}
+
+
+class Split(AWSHelperFn):
+    """CloudFormation ``Fn::Split`` intrinsic function."""
+
+    def __init__(self, delimiter: str, values: Union[str, AWSHelperFnOrDict]) -> None:
+        """Instantiate class."""
+        validators.validate_delimiter(delimiter)
+        self.data = {"Fn::Split": [delimiter, values]}
+
+
+class Sub(AWSHelperFn):
+    """CloudFormation ``Fn::Sub`` intrinsic function."""
+
+    def __init__(
+        self,
+        input_str: str,
+        dict_values: Optional[Dict[str, Any]] = None,
+        **values: Any,
+    ) -> None:
+        """Instantiate class."""
+        # merge dict
+        if dict_values:
+            values.update(dict_values)
+        self.data = {"Fn::Sub": [input_str, values] if values else input_str}
+
+
+class DefaultTypedDict(TypedDict):
+    """TypedDict that only contains a ``default`` field."""
+
+    default: str
+
+
+class ParameterGroupTypedDict(TypedDict):
+    """``AWS::CloudFormation::Interface.ParameterGroup``."""
+
+    Label: DefaultTypedDict
+    Parameters: List[str]
+
+
 # Pseudo Parameter Ref's
 AccountId = Ref(AWS_ACCOUNT_ID)  # pylint: disable=invalid-name
 NotificationARNs = Ref(AWS_NOTIFICATION_ARNS)  # pylint: disable=invalid-name
@@ -797,4 +911,41 @@ StackId = Ref(AWS_STACK_ID)  # pylint: disable=invalid-name
 StackName = Ref(AWS_STACK_NAME)  # pylint: disable=invalid-name
 URLSuffix = Ref(AWS_URL_SUFFIX)  # pylint: disable=invalid-name
 
-Output.update_forward_refs()
+
+class AWSObject(BaseAWSObject):
+    """AWS Object."""
+
+    DICT_NAME: ClassVar[str] = "Properties"
+    RESOURCE_TYPE: ClassVar[str]
+
+    def get_att(self, value: str) -> GetAtt:
+        """Return a reference to an attribute of this object."""
+        return GetAtt(self, value)
+
+    def dict(
+        self,
+        *,
+        include: Union[AbstractSetIntStr, MappingIntStrAny] = None,
+        exclude: Union[AbstractSetIntStr, MappingIntStrAny] = None,
+        by_alias: bool = False,
+        skip_defaults: bool = None,
+        exclude_unset: bool = False,
+        exclude_defaults: bool = False,
+        exclude_none: bool = False,
+    ) -> Dict[str, Any]:
+        """Generate a dictionary representation of the model."""
+        data = super().dict(
+            include=include,
+            exclude=exclude,
+            by_alias=by_alias,
+            skip_defaults=skip_defaults,
+            exclude_unset=exclude_unset,
+            exclude_defaults=exclude_defaults,
+            exclude_none=exclude_none,
+        )
+        data["Type"] = self.RESOURCE_TYPE
+        return data
+
+    def ref(self) -> Ref:
+        """Return a reference to this object."""
+        return Ref(self)
