@@ -18,6 +18,6 @@
   "homepage": "https://github.com/ITProKyle/troposphere-pydantic#readme",
   "devDependencies": {
     "cspell": "^5.13.2",
-    "pyright": "^1.1.194"
+    "pyright": "^1.1.195"
   }
 }
